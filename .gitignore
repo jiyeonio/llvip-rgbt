@@ -1,0 +1,9 @@
+.venv/
+data/*
+!data/split.csv
+models/
+candidates/DO_NOT_OPEN_*
+handoff/
+__pycache__/
+*.zip
+*.pt

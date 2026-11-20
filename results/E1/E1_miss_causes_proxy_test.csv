@@ -1,0 +1,5 @@
+코드 검증용(proxy 재학습, Test)
+group,n_gt,hit,low_conf,no_candidate
+all,8302,0.8988,0.0843,0.0169
+q1,1634,0.7258,0.2283,0.0459
+overlap,819,0.7766,0.2027,0.0208

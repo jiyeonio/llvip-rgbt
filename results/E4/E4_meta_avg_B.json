@@ -1,0 +1,19 @@
+{
+ "best_config": "box+dup",
+ "lgbm_params": {
+  "n_estimators": 300,
+  "learning_rate": 0.05,
+  "num_leaves": 31,
+  "random_state": 0,
+  "verbose": -1
+ },
+ "min_conf": 0.01,
+ "n_target": 36166,
+ "folds": [
+  0,
+  1,
+  2,
+  3,
+  4
+ ]
+}

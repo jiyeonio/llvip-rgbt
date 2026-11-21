@@ -1,0 +1,5 @@
+B 내부 5-fold 교차검증 (segment 단위, seed 42): 4 fold로 고르고 빠진 fold에서 평가 / 평균 ± 표준편차(ddof=1)
+method,fppi_mean,fppi_std,fppi,recall_mean,recall_std,recall,recall_q1_mean,recall_q1_std,recall_q1,recall_overlap_mean,recall_overlap_std,recall_overlap
+group_thresholds,0.6737,0.4216,0.6737 ± 0.4216,0.8796,0.0556,0.8796 ± 0.0556,0.7204,0.0896,0.7204 ± 0.0896,0.7494,0.1151,0.7494 ± 0.1151
+single_threshold@same_fppi,0.6737,0.4216,0.6737 ± 0.4216,0.8781,0.0566,0.8781 ± 0.0566,0.7112,0.0937,0.7112 ± 0.0937,0.7620,0.1128,0.7620 ± 0.1128
+group - single,,,,0.0016,0.0015,0.0016 ± 0.0015,0.0092,0.0071,0.0092 ± 0.0071,-0.0126,0.0070,-0.0126 ± 0.0070

@@ -1,0 +1,6 @@
+참고용(in-sample): B 전체로 고르고 B 전체에서 평가한 값
+method,t_small,t_normal_ov,t_normal_noov,fppi,recall,recall_q1,recall_overlap,objective,n_valid_combos,verify_rank
+group_thresholds(real),0.2300,0.3500,0.1500,0.4985,0.8782,0.7049,0.7443,0.7246,19827,0
+group_thresholds(fast),0.2300,0.3500,0.1500,0.4985,0.8782,0.7049,0.7443,0.7246,19827,0
+single_threshold@same_fppi,,,,0.4985,0.8727,0.6847,0.7509,,19827,0
+single_threshold@fppi0.5,,,,0.5000,0.8728,0.6848,0.7511,0.7180,19827,0

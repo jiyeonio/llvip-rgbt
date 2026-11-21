@@ -1,0 +1,8 @@
+B 내부 5-fold 교차검증 (segment 단위, seed 42): 4 fold로 고르고 빠진 fold에서 평가
+segment_id,n_images,fold
+9,1258,0
+16,567,1
+13,500,2
+4,473,3
+7,452,3
+3,473,4

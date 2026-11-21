@@ -338,3 +338,199 @@ def save_csv(df: pd.DataFrame, path: str, model: str, note: str | None = None):
         if note:
             f.write(note + "\n")
         df.to_csv(f, index=False, float_format="%.4f")
+
+
+# ---------------------------------------------------------------- E4 특징 (후보 박스 기준)
+FEAT_BOX = ["conf", "h", "w", "aspect", "yc", "max_ioa_ref", "n_neigh", "rank_img"]
+FEAT_DUP = ["dup_max_iou_higher", "dup_conf_ratio", "dup_bundle_rank"]
+FEAT_IR = ["ir_mean", "ir_max", "ir_ring_diff", "ir_top", "ir_mid", "ir_bot", "ir_bright_frac"]
+FEAT_RGB = ["rgb_mean", "rgb_std", "rgb_ring_diff"]
+REF_CONF = 0.1          # ① 겹침·주변 후보 기준 conf
+RING_FRAC = 0.2         # 테두리 폭 = 박스 폭의 20%
+BRIGHT_Q = 80           # 이미지 전체 80분위
+
+
+def _inter_matrix(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    ix = np.clip(np.minimum(a[:, None, 2], b[None, :, 2]) - np.maximum(a[:, None, 0], b[None, :, 0]), 0, None)
+    iy = np.clip(np.minimum(a[:, None, 3], b[None, :, 3]) - np.maximum(a[:, None, 1], b[None, :, 1]), 0, None)
+    return ix * iy
+
+
+def geom_features(box: np.ndarray, conf: np.ndarray, tgt: np.ndarray) -> dict:
+    """한 이미지의 ①·D 특징. box/conf = 저장된 전체 후보, tgt = 특징을 낼 후보의 위치 인덱스."""
+    tb, tc = box[tgt], conf[tgt]
+    h, w = tb[:, 3] - tb[:, 1], tb[:, 2] - tb[:, 0]
+    area_t = np.maximum(w * h, 1e-12)
+    area_a = np.maximum((box[:, 2] - box[:, 0]) * (box[:, 3] - box[:, 1]), 1e-12)
+    inter = _inter_matrix(tb, box)                                  # (T, N)
+    self_m = np.zeros_like(inter, bool)
+    self_m[np.arange(len(tgt)), tgt] = True
+    ioa_t = inter / area_t[:, None]                                 # 내 넓이 기준
+    ioa_o = inter / area_a[None, :]                                 # 상대 넓이 기준
+    iou = inter / np.maximum(area_t[:, None] + area_a[None, :] - inter, 1e-12)
+
+    ref = (conf >= REF_CONF)[None, :] & ~self_m
+    max_ioa_ref = np.where(ref, ioa_t, 0).max(axis=1) if len(conf) else np.zeros(len(tgt))
+    n_neigh = (ref & (inter > 0)).sum(axis=1)
+    rank_img = 1 + (conf[None, :] > tc[:, None]).sum(axis=1)
+
+    higher = (conf[None, :] > tc[:, None]) & ~self_m
+    iou_h = np.where(higher, iou, 0.0)
+    j = iou_h.argmax(axis=1)
+    dup_iou = iou_h[np.arange(len(tgt)), j]
+    dup_ratio = np.where(dup_iou > 0, tc / conf[j], 0.0)
+    bundle = ((ioa_t > OVERLAP_IOA) | (ioa_o > OVERLAP_IOA)) & ~self_m
+    bundle_rank = 1 + (bundle & (conf[None, :] > tc[:, None])).sum(axis=1)
+    return dict(conf=tc, h=h, w=w, aspect=w / np.maximum(h, 1e-12), yc=(tb[:, 1] + tb[:, 3]) / 2,
+                max_ioa_ref=max_ioa_ref, n_neigh=n_neigh, rank_img=rank_img,
+                dup_max_iou_higher=dup_iou, dup_conf_ratio=dup_ratio, dup_bundle_rank=bundle_rank)
+
+
+def _int_boxes(b: np.ndarray, W: int = IMG_W, H: int = IMG_H) -> np.ndarray:
+    """정수 픽셀 박스 (x1, y1 내림 / x2, y2 올림), 이미지 안으로 자르고 최소 1px."""
+    xa = np.clip(np.floor(b[:, 0]), 0, W - 1).astype(int)
+    ya = np.clip(np.floor(b[:, 1]), 0, H - 1).astype(int)
+    xb = np.maximum(np.clip(np.ceil(b[:, 2]), 0, W).astype(int), xa + 1)
+    yb = np.maximum(np.clip(np.ceil(b[:, 3]), 0, H).astype(int), ya + 1)
+    return np.stack([xa, ya, xb, yb], 1)
+
+
+def _rect_sum(S: np.ndarray, xa, ya, xb, yb):
+    return S[yb, xb] - S[ya, xb] - S[yb, xa] + S[ya, xa]
+
+
+def _box_ring(S: np.ndarray, ib: np.ndarray, W: int = IMG_W, H: int = IMG_H):
+    """박스 안 합·넓이, 테두리(박스 폭의 20%, 이미지 밖 제외) 합·넓이."""
+    xa, ya, xb, yb = ib.T
+    area = (xb - xa) * (yb - ya)
+    s_in = _rect_sum(S, xa, ya, xb, yb)
+    r = np.maximum(np.rint(RING_FRAC * (xb - xa)).astype(int), 1)
+    ea, eb = np.clip(xa - r, 0, W), np.clip(xb + r, 0, W)
+    fa, fb = np.clip(ya - r, 0, H), np.clip(yb + r, 0, H)
+    ring_area = (eb - ea) * (fb - fa) - area
+    ring_sum = _rect_sum(S, ea, fa, eb, fb) - s_in
+    return s_in, area, ring_sum, ring_area
+
+
+def ir_features(img: np.ndarray, box: np.ndarray) -> dict:
+    """② 열화상 특징. img = 회색조 (H, W) uint8."""
+    import cv2
+    f = img.astype(np.float64)
+    S = cv2.integral(f, sdepth=cv2.CV_64F)
+    ib = _int_boxes(box, img.shape[1], img.shape[0])
+    s_in, area, ring_sum, ring_area = _box_ring(S, ib, img.shape[1], img.shape[0])
+    mean = s_in / area
+    ring_mean = np.where(ring_area > 0, ring_sum / np.maximum(ring_area, 1), np.nan)
+    xa, ya, xb, yb = ib.T
+    thirds = []
+    for k in range(3):
+        y0 = ya + np.rint(k * (yb - ya) / 3).astype(int)
+        y1 = ya + np.rint((k + 1) * (yb - ya) / 3).astype(int)
+        a = (xb - xa) * (y1 - y0)
+        thirds.append(np.where(a > 0, _rect_sum(S, xa, y0, xb, y1) / np.maximum(a, 1), np.nan))
+    thr = np.percentile(img, BRIGHT_Q)
+    SB = cv2.integral((img > thr).astype(np.uint8), sdepth=cv2.CV_64F)
+    bright = _rect_sum(SB, xa, ya, xb, yb) / area
+    mx = np.array([img[y0:y1, x0:x1].max() for x0, y0, x1, y1 in ib], float)
+    return dict(ir_mean=mean, ir_max=mx, ir_ring_diff=mean - ring_mean,
+                ir_top=thirds[0], ir_mid=thirds[1], ir_bot=thirds[2], ir_bright_frac=bright)
+
+
+def rgb_features(img_bgr: np.ndarray, box: np.ndarray) -> dict:
+    """③ RGB 특징 (회색조 밝기)."""
+    import cv2
+    g = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY).astype(np.float64)
+    S = cv2.integral(g, sdepth=cv2.CV_64F)
+    S2 = cv2.integral(g * g, sdepth=cv2.CV_64F)
+    ib = _int_boxes(box, g.shape[1], g.shape[0])
+    s_in, area, ring_sum, ring_area = _box_ring(S, ib, g.shape[1], g.shape[0])
+    mean = s_in / area
+    var = np.clip(_rect_sum(S2, *ib.T) / area - mean ** 2, 0, None)
+    ring_mean = np.where(ring_area > 0, ring_sum / np.maximum(ring_area, 1), np.nan)
+    return dict(rgb_mean=mean, rgb_std=np.sqrt(var), rgb_ring_diff=mean - ring_mean)
+
+
+def extract_features(cands: pd.DataFrame, min_conf: float = 0.01, subset: str = "train"):
+    """conf >= min_conf 후보의 ①·D·②·③ 특징. 반환 (특징 DataFrame, 이미지별 시간 DataFrame[ms]).
+
+    특징 DataFrame은 cands 인덱스(cand_idx)와 image_id, 좌표, conf를 함께 담는다.
+    """
+    import time
+    import cv2
+    out, times = [], []
+    for iid, pos in cands.groupby("image_id").indices.items():
+        sub = cands.iloc[pos]
+        box = sub[["x1", "y1", "x2", "y2"]].to_numpy(float)
+        conf = sub["conf"].to_numpy(float)
+        tgt = np.nonzero(conf >= min_conf)[0]
+        if len(tgt) == 0:
+            continue
+        t0 = time.perf_counter()
+        g = geom_features(box, conf, tgt)
+        t1 = time.perf_counter()
+        ir = cv2.imread(os.path.join(LLVIP_DIR, "infrared", subset, f"{iid}.jpg"), cv2.IMREAD_GRAYSCALE)
+        fi = ir_features(ir, box[tgt])
+        t2 = time.perf_counter()
+        vis = cv2.imread(os.path.join(LLVIP_DIR, "visible", subset, f"{iid}.jpg"), cv2.IMREAD_COLOR)
+        fr = rgb_features(vis, box[tgt])
+        t3 = time.perf_counter()
+        df = pd.DataFrame({**g, **fi, **fr})
+        df.insert(0, "cand_idx", sub.index[tgt])
+        df.insert(1, "image_id", iid)
+        for k in ("x1", "y1", "x2", "y2"):
+            df[k] = box[tgt, ["x1", "y1", "x2", "y2"].index(k)]
+        out.append(df)
+        times.append((iid, len(tgt), (t1 - t0) * 1e3, (t2 - t1) * 1e3, (t3 - t2) * 1e3))
+    feats = pd.concat(out, ignore_index=True)
+    tdf = pd.DataFrame(times, columns=["image_id", "n_cands", "ms_box_dup", "ms_ir", "ms_rgb"])
+    return feats, tdf
+
+
+# ---------------------------------------------------------------- E4-2 상대값 특징
+FEAT_BOX_E42 = ["conf", "logit_conf", "h", "w", "aspect", "max_ioa_ref", "n_neigh", "rank_img"]   # y중심 제거
+FEAT_IR_E42 = ["ir_ring_diff", "ir_ring_diff_z", "ir_mean_rel", "ir_top_rel", "ir_mid_rel", "ir_bot_rel", "ir_bright_frac"]
+FEAT_RGB_E42 = ["rgb_ring_diff", "rgb_ring_diff_z", "rgb_mean_rel", "rgb_top_rel", "rgb_mid_rel", "rgb_bot_rel",
+                "rgb_bright_frac"]
+
+
+def extract_e42_extra(feats: pd.DataFrame, subset: str = "train") -> pd.DataFrame:
+    """기존 특징 캐시에 없는 값만 계산: 이미지 전체 평균·표준편차(열화상·RGB), RGB 3등분 평균·상위 20% 비율."""
+    import cv2
+    out = []
+    for iid, pos in feats.groupby("image_id").indices.items():
+        sub = feats.iloc[pos]
+        box = sub[["x1", "y1", "x2", "y2"]].to_numpy(float)
+        ir = cv2.imread(os.path.join(LLVIP_DIR, "infrared", subset, f"{iid}.jpg"), cv2.IMREAD_GRAYSCALE)
+        vis = cv2.imread(os.path.join(LLVIP_DIR, "visible", subset, f"{iid}.jpg"), cv2.IMREAD_COLOR)
+        g = cv2.cvtColor(vis, cv2.COLOR_BGR2GRAY)
+        fr = ir_features(g, box)                     # 같은 정의를 RGB 회색조에 적용
+        out.append(pd.DataFrame({
+            "cand_idx": sub.cand_idx.to_numpy(),
+            "ir_img_mean": ir.mean(), "ir_img_std": ir.std(),
+            "rgb_img_mean": g.mean(), "rgb_img_std": g.std(),
+            "rgb_top": fr["ir_top"], "rgb_mid": fr["ir_mid"], "rgb_bot": fr["ir_bot"],
+            "rgb_bright_frac": fr["ir_bright_frac"], "rgb_mean_chk": fr["ir_mean"]}))
+    return pd.concat(out, ignore_index=True)
+
+
+def _div(a, b):
+    a, b = np.asarray(a, float), np.asarray(b, float)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return np.where(b != 0, a / np.where(b != 0, b, 1), np.nan)
+
+
+def build_e42(feats: pd.DataFrame, extra: pd.DataFrame) -> pd.DataFrame:
+    """기존 특징 + 추가값 -> E4-2 특징 (feats와 같은 행 순서)."""
+    x = feats.merge(extra, on="cand_idx", how="left", validate="1:1")
+    assert len(x) == len(feats) and (x.cand_idx.to_numpy() == feats.cand_idx.to_numpy()).all()
+    c = np.clip(x.conf.to_numpy(float), 1e-6, 1 - 1e-6)
+    out = x[["cand_idx", "image_id", "x1", "y1", "x2", "y2"] + FEAT_BOX + FEAT_DUP].copy()
+    out["logit_conf"] = np.log(c / (1 - c))
+    for p, mean in (("ir", x.ir_mean), ("rgb", x.rgb_mean)):
+        out[f"{p}_ring_diff"] = x[f"{p}_ring_diff"]
+        out[f"{p}_ring_diff_z"] = _div(x[f"{p}_ring_diff"], x[f"{p}_img_std"])
+        out[f"{p}_mean_rel"] = _div(mean, x[f"{p}_img_mean"])
+        for part in ("top", "mid", "bot"):
+            out[f"{p}_{part}_rel"] = _div(x[f"{p}_{part}"], mean)
+        out[f"{p}_bright_frac"] = x[f"{p}_bright_frac"]
+    return out

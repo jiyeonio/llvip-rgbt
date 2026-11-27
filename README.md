@@ -46,6 +46,10 @@ llvip_eval/
 | `code/plot_slides.py` | 발표용 그래프 2장 (미탐 원인 누적 막대, 개선 여지 상한 막대). 기존 결과 csv를 읽기만 함 |
 | `code/resnet_crop.py` | ResNet 재판별기 준비 코드: 후보 crop Dataset(RGB+열화상 4채널, 112×112) + 4채널 ResNet18 (1번 작성) |
 | `code/test_eval.py`, `code/test_E3.py`, `code/test_E4.py` | 가짜 데이터 테스트 |
+| `code/train_A_model.py` | A로 탐지기 학습, 베이스 가중치를 인자로 받음 (`--base yolo11s.pt`). 학습 데이터·val 분리·설정은 `train_A.py`와 같고 Test는 다루지 않음. 학습 시간을 `models/<name>/train_time.json`에 기록 |
+| `code/run_yolo_s.sh` | YOLO11s 학습 → B 후보 생성 → (학습 시간 비교용) YOLO11n 재학습을 순서대로 실행 (nohup으로 돌리는 용도) |
+| `code/run_yolo_s.py` | YOLO11n vs YOLO11s 평가 (B, E1과 같은 방식). n 수치가 기존 E1 결과와 같은지 확인하고 `results/yolo_s/`에 저장 |
+| `code/speed_yolo.py` | n·s 추론 속도 비교 (같은 GPU, imgsz 640, batch 1, warmup 후 B 500장), 파라미터 수·GFLOPs |
 
 ## LLVIP 받기
 
@@ -199,6 +203,17 @@ image_id,segment_id,split
 .venv/bin/python code/test_E4.py
 ```
 
+### YOLO11s 비교 (YOLO11n과 같은 설정)
+
+```
+nohup code/run_yolo_s.sh > models/yolo_s_pipeline.log 2>&1 &   # s 학습 → s B 후보 → n 재학습(시간 측정용)
+.venv/bin/python code/run_yolo_s.py                              # n vs s 평가 → results/yolo_s/
+.venv/bin/python code/speed_yolo.py                              # 속도 → results/yolo_s/speed.csv (GPU가 비어 있을 때)
+```
+
+- s는 `train_A.py`와 같은 데이터(A, 평균 융합)·val 분리·설정(imgsz 640, epochs 28, batch 16, seed 0)에 베이스만 `yolo11s.pt`로 바꿔 학습합니다. 가중치는 `weights/A_avg_s_best.pt`, B 후보는 `candidates/candidates_avg_s_B.csv`
+- n 지표·속도는 기존 `weights/A_avg_best.pt`와 E1 후보(`candidates_avg_B.csv`)를 씁니다. n 재학습(`models/A_avg_n_retime/`)은 같은 GPU에서 학습 시간을 재기 위한 것이라 저장소에 올리지 않습니다
+
 ## 주요 결과 요약 (B, FPPI 0.5)
 
 | 실험 | 결과 |
@@ -209,8 +224,85 @@ image_id,segment_id,split
 | E4-0 | 후보가 있는 정답을 모두 살리면 (conf ≥ 0.01 후보 기준) Q1 +15.2%p, 겹침 +15.3%p까지 가능 |
 | E4-1 | LightGBM 재점수화는 네 구성 모두 원래 점수보다 낮음. 로지스틱 회귀만 소폭 상승(표준편차 안) |
 | E4-2 | y중심 하나만 빼도 LightGBM 손실이 크게 줄어(Q1 −3.18 → −1.09%p) 장면 외우기 가설 지지. 원래 점수보다 확실히 나은 모델은 없음 |
+| YOLO11s | 같은 설정에서 탐지기만 YOLO11s로: Recall 전체 0.912 / Q1 0.753 / 겹침 0.798 (n 대비 +3.9 / +6.8 / +4.7%p), conf 0.25 FPPI 0.616 → 0.338. 개선은 low_conf 감소에서 나오고 후보 없음(no_candidate)은 줄지 않음(겹침 5.8 → 7.3%). batch 1 추론은 n과 같음(A5000 약 5.8ms), 학습 15.9 → 18.4분 |
 
 자세한 수치는 `results/` 아래 csv를 참고하세요.
+
+## 결과 파일 설명
+
+모든 결과는 B(avg 후보) 기준입니다. `*_proxy_test.*`는 코드 검증용(proxy 재학습, Test)이라 발표 수치로 쓰지 않습니다.
+일부 csv는 첫 줄이 설명 문구이므로 `pd.read_csv(path, skiprows=1)`로 읽습니다.
+
+### results/E1/ — FPPI-Recall, 미탐 원인
+
+| 파일 | 내용 | 주요 열 |
+| --- | --- | --- |
+| `E1_curve_avg_B.csv` | 합격선 0.001~0.95 (0.001 간격) 스윕 | `thr, tp, fp, fppi, recall, recall_q1, recall_overlap` |
+| `E1_recall_at_fppi_avg_B.csv` | FPPI 0.25/0.5/1.0에서 Recall (선형 보간) | `fppi, all, q1, overlap` |
+| `E1_miss_causes_avg_B.csv` | conf 0.25 기준 미탐 원인 비율 | `group, n_gt, hit, low_conf, no_candidate` |
+| `E1_curve_{all,q1,overlap}_avg_B.png` | FPPI-Recall 곡선 (FPPI 0~2) | |
+| `E1_miss_causes_avg_B.png` | 미탐 원인 가로 누적 막대 | |
+
+### results/E2/ — 점수 치우침
+
+| 파일 | 내용 | 주요 열 |
+| --- | --- | --- |
+| `E2_reliability_avg_B.csv` | conf 구간·그룹별 사람 비율 | `group_type, group, bin, n, person_ratio, mean_conf, low_n` |
+| `E2_reliability_{size,overlap}_avg_B.png` | 크기별·겹침별 reliability diagram (후보 50개 미만 구간 표시) | |
+
+### results/E3/ — 그룹별 합격선
+
+| 파일 | 내용 | 주요 열 |
+| --- | --- | --- |
+| `E3_cv_summary_avg_B.csv` | 5-fold 교차검증 평균 ± 표준편차 | `method, fppi, recall, recall_q1, recall_overlap` (+ `_mean`, `_std`) |
+| `E3_cv_folds_avg_B.csv` | fold별 고른 합격선과 빠진 fold 평가 | `fold, t_small, t_normal_ov, t_normal_noov, group_*, single_*, diff_*` |
+| `E3_cv_fold_assignment_avg_B.csv` | segment → fold 배정 | `segment_id, n_images, fold` |
+| `E3_insample_{result,top20_fast,verify}_avg_B.csv` | 참고용(in-sample): B 전체로 고르고 B 전체에서 평가 | `method, t_*, fppi, recall*, objective` |
+
+### results/E4/ — 개선 여지 상한, 재점수화
+
+| 파일 | 내용 | 주요 열 |
+| --- | --- | --- |
+| `E4_0_upper_bound_avg_B.csv` | FPPI 0.5 지점 Recall 상한 | `group, recall, upper_all_cands, gain_all_%p, upper_conf>=0.01, gain_conf>=0.01_%p` |
+| `E4_0_headroom_avg_B.png` | 실제 Recall vs 상한 묶음 막대 | |
+| `E4_1_{folds,summary}_avg_B.csv` | E4-1 LightGBM·LR 재점수화, fold별 / 평균 ± 표준편차 | `config, fppi, new_*, base_*, diff_*` |
+| `E4_1_importance_avg_B.csv` | LightGBM 특징 중요도(gain) 상위 15 | `config, feature, gain, rank` |
+| `E4_E3_folds_avg_B.csv` | 재점수 + 그룹별 합격선 | `fold, t_*, fppi, recall*, diff_*` |
+| `E4_compare_avg_B.csv` | E4-1 비교 요약 (FPPI 0.5) | `method, fppi, recall, recall_diff_%p, …` |
+| `E4_feature_time_avg_B.csv` | 이미지당 특징 추출 시간 | `part, ms_per_image_mean, ms_per_image_median` |
+| `E4_2_{folds,summary,scenes}_avg_B.csv` | E4-2 장면 의존 특징 제거, fold별 / 평균 / segment별 | `model, fppi, new_*, base_*, diff_*` (scenes는 `segment_id` 추가) |
+| `E4_2_importance_avg_B.csv`, `E4_2_lr_coef_avg_B.csv` | LightGBM 중요도, LR 계수(표준화 기준) | `model, feature, gain` / `model, feature, mean, std` |
+| `E4_2_compare_avg_B.csv` | E4-1 vs E4-2 (FPPI 0.5) | `실험, 모델, recall, recall_diff_%p, …` |
+| `E4_meta_avg_B.json` | E4-1 설정·가장 좋은 구성 | |
+
+### results/yolo_s/ — YOLO11n vs YOLO11s
+
+n = `candidates/candidates_avg_B.csv` (E1과 같은 후보, `weights/A_avg_best.pt`),
+s = `candidates/candidates_avg_s_B.csv` (`weights/A_avg_s_best.pt`, n과 같은 학습 설정에 베이스만 yolo11s.pt).
+
+| 파일 | 내용 | 주요 열 |
+| --- | --- | --- |
+| `compare_n_vs_s_B.csv` | n·s 지표 나란히 + 마지막 행 s − n | `model, n_cands, recall@fppi{0.25,0.5,1.0}, recall_q1@…, recall_overlap@…, conf0.25_fppi, conf0.25_recall*` |
+| `recall_at_fppi_avg_B.csv`, `recall_at_fppi_avg_s_B.csv` | FPPI 0.25/0.5/1.0에서 Recall (E1과 같은 형식) | `fppi, all, q1, overlap` |
+| `curve_avg_B.csv`, `curve_avg_s_B.csv` | 합격선 스윕 (E1과 같은 형식) | `thr, tp, fp, fppi, recall, recall_q1, recall_overlap` |
+| `miss_causes_avg_B.csv`, `miss_causes_avg_s_B.csv` | conf 0.25 미탐 원인 (E1과 같은 형식) | `group, n_gt, hit, low_conf, no_candidate` |
+| `miss_causes_n_vs_s_B.csv` | 미탐 원인 n·s 한 표 | `model, group, n_gt, hit, low_conf, no_candidate` |
+| `speed.csv` | 추론 속도 (A5000, imgsz 640, batch 1, B 500장, warmup 30장, n→s 2회 반복) | `repeat, model, params_M, GFLOPs, inference_ms_mean, inference_ms_median, pre+inf+post_ms_mean, wall_ms_mean(읽기 포함)` |
+| `fppi_recall_n_vs_s_B.png` | 전체·Q1·겹침 FPPI-Recall 곡선 n vs s | |
+| `miss_causes_n_vs_s_B.png` | 미탐 원인 가로 누적 막대 n vs s | |
+
+## PPT ↔ repo 실험 대응표
+
+| PPT 슬라이드 | 실험 | 코드 | 결과 폴더 |
+| --- | --- | --- | --- |
+|  | 공통 평가 함수·proxy 검증 | `code/eval.py`, `code/test_eval.py` | `results/E1/*_proxy_test.*` |
+|  | E1 FPPI-Recall·미탐 원인 | `code/run_E1.py`, `code/plot_slides.py` | `results/E1/` |
+|  | E2 점수 치우침 | `code/run_E2.py` | `results/E2/` |
+|  | E3 그룹별 합격선 (5-fold) | `code/run_E3.py` | `results/E3/` |
+|  | E4-0 개선 여지 상한 | `code/run_E4.py`, `code/plot_slides.py` | `results/E4/E4_0_*` |
+|  | E4-1 LightGBM 재점수화 | `code/run_E4.py` | `results/E4/E4_1_*`, `E4_E3_*`, `E4_compare_*` |
+|  | E4-2 장면 의존 특징 제거 | `code/run_E4_2.py` | `results/E4/E4_2_*` |
+|  | YOLO11n vs YOLO11s | `code/train_A_model.py`, `code/run_yolo_s.sh`, `code/run_yolo_s.py`, `code/speed_yolo.py` | `results/yolo_s/` |
 
 ## 다음 단계: ResNet 재판별기 (code/resnet_crop.py)
 

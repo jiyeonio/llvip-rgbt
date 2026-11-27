@@ -1,0 +1,5 @@
+B, E1과 같은 방식. n = 기존 E1 후보. 마지막 행: Recall은 %p 차이, conf0.25_fppi는 그대로 차이
+model,candidates,n_cands,cands_per_image_max,recall@fppi0.25,recall_q1@fppi0.25,recall_overlap@fppi0.25,recall@fppi0.5,recall_q1@fppi0.5,recall_overlap@fppi0.5,recall@fppi1.0,recall_q1@fppi1.0,recall_overlap@fppi1.0,conf0.25_fppi,conf0.25_recall,conf0.25_recall_q1,conf0.25_recall_overlap
+YOLO11n,candidates_avg_B.csv,115407.0000,120.0000,0.8434,0.6284,0.6889,0.8728,0.6848,0.7511,0.8954,0.7310,0.7879,0.6156,0.8784,0.6979,0.7670
+YOLO11s,candidates_avg_s_B.csv,48842.0000,69.0000,0.8891,0.7027,0.7663,0.9116,0.7528,0.7983,0.9264,0.7890,0.8205,0.3379,0.9014,0.7297,0.7860
+s − n (%p),,,,4.5647,7.4342,7.7454,3.8742,6.8003,4.7191,3.1018,5.7977,3.2647,-0.2777,2.2984,3.1822,1.8939

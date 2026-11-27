@@ -1,0 +1,5 @@
+repeat,model,weights,gpu,imgsz,batch,n_images,params_M,GFLOPs,inference_ms_mean,inference_ms_median,pre+inf+post_ms_mean,pre+inf+post_ms_median,wall_ms_mean(읽기 포함),wall_ms_median(읽기 포함),preprocess_ms_mean,postprocess_ms_mean
+1,YOLO11n,weights/A_avg_best.pt,NVIDIA RTX A5000,640,1,500,2.605,6.567,5.727,5.720,7.430,7.435,14.546,14.261,0.971,0.732
+1,YOLO11s,weights/A_avg_s_best.pt,NVIDIA RTX A5000,640,1,500,9.428,21.666,5.834,5.802,7.563,7.508,12.851,12.710,0.998,0.731
+2,YOLO11n,weights/A_avg_best.pt,NVIDIA RTX A5000,640,1,500,2.605,6.567,5.810,5.756,7.519,7.466,11.948,11.612,0.969,0.739
+2,YOLO11s,weights/A_avg_s_best.pt,NVIDIA RTX A5000,640,1,500,9.428,21.666,5.790,5.728,7.493,7.406,11.925,11.555,0.977,0.727
